@@ -1,0 +1,194 @@
+diff --git a/backend/backend.c b/backend/backend.c
+index a0ed834b..c027d07c 100644
+--- a/backend/backend.c
++++ b/backend/backend.c
+@@ -36,6 +36,10 @@
+ #include <wlr/backend/x11.h>
+ #endif
+ 
++#if defined (__ANDROID__) && defined (__TERMUX__)
++#include <wlr/backend/termuxgui.h>
++#endif
++
+ #define WAIT_SESSION_TIMEOUT 10000 // ms
+ 
+ void wlr_backend_init(struct wlr_backend *backend,
+@@ -196,6 +200,23 @@ static struct wlr_backend *attempt_headless_backend(
+ 	return backend;
+ }
+ 
++#if defined (__ANDROID__) && defined (__TERMUX__)
++static struct wlr_backend *attempt_tgui_backend(
++		struct wl_display *display) {
++	struct wlr_backend *backend = wlr_tgui_backend_create(display);
++	if (backend == NULL) {
++		return NULL;
++	}
++
++	size_t outputs = parse_outputs_env("WLR_TGUI_OUTPUTS");
++	for (size_t i = 0; i < outputs; ++i) {
++		wlr_tgui_add_output(backend);
++	}
++
++	return backend;
++}
++#endif
++
+ #if WLR_HAS_DRM_BACKEND
+ static struct wlr_backend *attempt_drm_backend(struct wl_display *display,
+ 		struct wlr_backend *backend, struct wlr_session *session) {
+@@ -249,6 +270,10 @@ static bool attempt_backend_by_name(struct wl_display *display,
+ #endif
+ 	} else if (strcmp(name, "headless") == 0) {
+ 		backend = attempt_headless_backend(display);
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	} else if (strcmp(name, "tgui") == 0) {
++		backend = attempt_tgui_backend(display);
++#endif
+ 	} else if (strcmp(name, "drm") == 0 || strcmp(name, "libinput") == 0) {
+ 		// DRM and libinput need a session
+ 		if (*session_ptr == NULL) {
+@@ -344,6 +369,18 @@ struct wlr_backend *wlr_backend_autocreate(struct wl_display *display,
+ 	}
+ #endif
+ 
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	{
++		struct wlr_backend *tgui_backend = attempt_tgui_backend(display);
++		if (!tgui_backend) {
++			goto error;
++		}
++
++		wlr_multi_backend_add(multi, tgui_backend);
++		goto success;
++	}
++#endif
++
+ #if !(WLR_HAS_LIBINPUT_BACKEND || WLR_HAS_DRM_BACKEND)
+ 	wlr_log(WLR_ERROR, "Neither DRM nor libinput backend support is compiled in");
+ 	goto error;
+diff --git a/backend/meson.build b/backend/meson.build
+index ed977d3b..446d894d 100644
+--- a/backend/meson.build
++++ b/backend/meson.build
+@@ -27,3 +27,4 @@ endforeach
+ subdir('multi')
+ subdir('wayland')
+ subdir('headless')
++subdir('termuxgui')
+diff --git a/backend/multi/backend.c b/backend/multi/backend.c
+index 49792ff9..b269a702 100644
+--- a/backend/multi/backend.c
++++ b/backend/multi/backend.c
+@@ -209,6 +209,13 @@ bool wlr_multi_backend_add(struct wlr_backend *_multi,
+ 	wl_signal_add(&backend->events.new_output, &sub->new_output);
+ 	sub->new_output.notify = new_output_reemit;
+ 
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	if (multi->backend.allocator == NULL &&
++		backend->allocator != NULL) {
++		multi->backend.allocator = backend->allocator;
++	}
++#endif
++
+ 	wl_signal_emit_mutable(&multi->events.backend_add, backend);
+ 	return true;
+ }
+diff --git a/include/wlr/backend.h b/include/wlr/backend.h
+index fac49f06..52986972 100644
+--- a/include/wlr/backend.h
++++ b/include/wlr/backend.h
+@@ -28,6 +28,9 @@ struct wlr_backend {
+ 		/** Raised when new outputs are added, passed the struct wlr_output */
+ 		struct wl_signal new_output;
+ 	} events;
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	struct wlr_allocator *allocator;
++#endif
+ };
+ 
+ /**
+diff --git a/render/allocator/allocator.c b/render/allocator/allocator.c
+index b380584c..8783daa5 100644
+--- a/render/allocator/allocator.c
++++ b/render/allocator/allocator.c
+@@ -146,6 +146,11 @@ struct wlr_allocator *allocator_autocreate_with_drm_fd(
+ 
+ struct wlr_allocator *wlr_allocator_autocreate(struct wlr_backend *backend,
+ 		struct wlr_renderer *renderer) {
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	if (backend->allocator)
++		return backend->allocator;
++#endif
++
+ 	// Note, drm_fd may be negative if unavailable
+ 	int drm_fd = wlr_backend_get_drm_fd(backend);
+ 	if (drm_fd < 0) {
+diff --git a/render/vulkan/renderer.c b/render/vulkan/renderer.c
+index ad45b2ef..e400dfcd 100644
+--- a/render/vulkan/renderer.c
++++ b/render/vulkan/renderer.c
+@@ -1816,6 +1816,9 @@ struct wlr_renderer *wlr_vk_renderer_create_with_drm_fd(int drm_fd) {
+ 		return NULL;
+ 	}
+ 
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	dev->drm_fd = open("/dev/null", O_RDONLY);
++#else
+ 	// We duplicate it so it's not closed while we still need it.
+ 	dev->drm_fd = fcntl(drm_fd, F_DUPFD_CLOEXEC, 0);
+ 	if (dev->drm_fd < 0) {
+@@ -1824,6 +1827,7 @@ struct wlr_renderer *wlr_vk_renderer_create_with_drm_fd(int drm_fd) {
+ 		vulkan_instance_destroy(ini);
+ 		return NULL;
+ 	}
++#endif
+ 
+ 	return vulkan_renderer_create_for_device(dev);
+ }
+diff --git a/types/wlr_drm.c b/types/wlr_drm.c
+index 32eea1c7..0f479817 100644
+--- a/types/wlr_drm.c
++++ b/types/wlr_drm.c
+@@ -199,6 +199,13 @@ struct wlr_drm *wlr_drm_create(struct wl_display *display,
+ 		return NULL;
+ 	}
+ 
++#if defined (__ANDROID__) && defined (__TERMUX__)
++	static const char *fake_node = "/dev/null";
++	char *node_name = malloc(strlen(fake_node) + 1);
++	if (node_name) {
++		memcpy(node_name, fake_node, strlen(fake_node) + 1);
++	}
++#else
+ 	drmDevice *dev = NULL;
+ 	if (drmGetDevice2(drm_fd, 0, &dev) != 0) {
+ 		wlr_log(WLR_ERROR, "drmGetDevice2 failed");
+@@ -218,6 +225,7 @@ struct wlr_drm *wlr_drm_create(struct wl_display *display,
+ 	if (node_name == NULL) {
+ 		return NULL;
+ 	}
++#endif
+ 
+ 	struct wlr_drm *drm = calloc(1, sizeof(*drm));
+ 	if (drm == NULL) {
+diff --git a/types/wlr_linux_dmabuf_v1.c b/types/wlr_linux_dmabuf_v1.c
+index 7480b9e1..003ed365 100644
+--- a/types/wlr_linux_dmabuf_v1.c
++++ b/types/wlr_linux_dmabuf_v1.c
+@@ -635,6 +635,7 @@ static bool feedback_tranche_init_with_renderer(
+ 		struct wlr_renderer *renderer) {
+ 	memset(tranche, 0, sizeof(*tranche));
+ 
++#if !defined (__ANDROID__) && !defined (__TERMUX__)
+ 	int drm_fd = wlr_renderer_get_drm_fd(renderer);
+ 	if (drm_fd < 0) {
+ 		wlr_log(WLR_ERROR, "Failed to get DRM FD from renderer");
+@@ -647,6 +648,7 @@ static bool feedback_tranche_init_with_renderer(
+ 		return false;
+ 	}
+ 	tranche->target_device = stat.st_rdev;
++#endif
+ 
+ 	tranche->formats = wlr_renderer_get_dmabuf_texture_formats(renderer);
+ 	if (tranche->formats == NULL) {
