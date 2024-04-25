@@ -1,4 +1,4 @@
-TERMUX_PKG_HOMEPAGE=http://www.lyx.org
+TERMUX_PKG_HOMEPAGE=https://www.lyx.org
 TERMUX_PKG_DESCRIPTION="WYSIWYM (What You See Is What You Mean) Document Processor"
 TERMUX_PKG_LICENSE="GPL-2.0"
 TERMUX_PKG_MAINTAINER="Simeon Huang <symeon@librehat.com>"
